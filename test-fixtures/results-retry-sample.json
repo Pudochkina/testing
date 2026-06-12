@@ -1,0 +1,53 @@
+{
+  "stats": {
+    "startTime": "2026-06-10T10:00:00.000Z",
+    "duration": 45000
+  },
+  "suites": [
+    {
+      "title": "Book List @smoke @book-list",
+      "specs": [
+        {
+          "title": "TC-BS-001: Flaky login test",
+          "file": "tests/specs/auth.spec.ts",
+          "tags": ["@smoke"],
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "duration": 1200,
+                  "startTime": "2026-06-10T10:00:05.000Z",
+                  "error": {
+                    "stack": "Error: \u001b[31mfirst attempt failed\u001b[39m"
+                  }
+                },
+                {
+                  "status": "passed",
+                  "duration": 1800,
+                  "startTime": "2026-06-10T10:00:10.000Z"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "TC-BS-002: Stable test",
+          "file": "tests/specs/auth.spec.ts",
+          "tags": ["@smoke"],
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "passed",
+                  "duration": 900,
+                  "startTime": "2026-06-10T10:00:20.000Z"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

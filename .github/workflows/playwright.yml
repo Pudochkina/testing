@@ -1,10 +1,14 @@
 name: Daily Suite
+
 on:
   push:
     branches: [main, master]
   pull_request:
     branches: [main, master]
   workflow_dispatch:
+
+env:
+  PIPELINE_STARTED_AT: ${{ github.run_started_at }}
 
 jobs:
   smoke-tests:
@@ -25,6 +29,9 @@ jobs:
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps
 
+      - name: Record job start time
+        run: echo "JOB_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Run Smoke Tests
         run: npm run test:smoke
         env:
@@ -32,24 +39,31 @@ jobs:
           FLAKY_MIN: 2
           FLAKY_MAX: 5
 
+      - name: Record job end time
+        if: always()
+        run: echo "JOB_COMPLETED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Transform Results to JSON
         if: always()
         run: node .github/scripts/transform-results.js
         env:
           PLAYWRIGHT_REPORT_PATH: test-results/results.json
-          PAYLOAD_OUTPUT_PATH: test-results-payload-smoke.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload.json
           JOB_NAME: smoke-tests
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          PIPELINE_STARTED_AT: ${{ env.PIPELINE_STARTED_AT }}
+          JOB_STARTED_AT: ${{ env.JOB_STARTED_AT }}
+          JOB_COMPLETED_AT: ${{ env.JOB_COMPLETED_AT }}
 
       - name: Upload Payload as Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: webhook-payload-smoke
-          path: test-results-payload-smoke.json
+          name: smoke-payload
+          path: test-results-payload.json
           retention-days: 30
 
       - name: Upload Test Results
@@ -80,6 +94,9 @@ jobs:
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps
 
+      - name: Record job start time
+        run: echo "JOB_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Run Functional Tests
         run: npx playwright test --grep "@functional"
         env:
@@ -87,24 +104,31 @@ jobs:
           FLAKY_MIN: 5
           FLAKY_MAX: 10
 
+      - name: Record job end time
+        if: always()
+        run: echo "JOB_COMPLETED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Transform Results to JSON
         if: always()
         run: node .github/scripts/transform-results.js
         env:
           PLAYWRIGHT_REPORT_PATH: test-results/results.json
-          PAYLOAD_OUTPUT_PATH: test-results-payload-functional.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload.json
           JOB_NAME: functional-tests
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          PIPELINE_STARTED_AT: ${{ env.PIPELINE_STARTED_AT }}
+          JOB_STARTED_AT: ${{ env.JOB_STARTED_AT }}
+          JOB_COMPLETED_AT: ${{ env.JOB_COMPLETED_AT }}
 
       - name: Upload Payload as Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: webhook-payload-functional
-          path: test-results-payload-functional.json
+          name: functional-payload
+          path: test-results-payload.json
           retention-days: 30
 
       - name: Upload Test Results
@@ -135,6 +159,9 @@ jobs:
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps
 
+      - name: Record job start time
+        run: echo "JOB_STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Run UI/UX Tests
         run: npx playwright test --grep "@ui-ux"
         env:
@@ -142,24 +169,31 @@ jobs:
           FLAKY_MIN: 1
           FLAKY_MAX: 3
 
+      - name: Record job end time
+        if: always()
+        run: echo "JOB_COMPLETED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
       - name: Transform Results to JSON
         if: always()
         run: node .github/scripts/transform-results.js
         env:
           PLAYWRIGHT_REPORT_PATH: test-results/results.json
-          PAYLOAD_OUTPUT_PATH: test-results-payload-ui-ux.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload.json
           JOB_NAME: ui-ux-tests
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          PIPELINE_STARTED_AT: ${{ env.PIPELINE_STARTED_AT }}
+          JOB_STARTED_AT: ${{ env.JOB_STARTED_AT }}
+          JOB_COMPLETED_AT: ${{ env.JOB_COMPLETED_AT }}
 
       - name: Upload Payload as Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: webhook-payload-ui-ux
-          path: test-results-payload-ui-ux.json
+          name: ui-ux-payload
+          path: test-results-payload.json
           retention-days: 30
 
       - name: Upload Test Results
@@ -189,9 +223,13 @@ jobs:
           find all-results/ -type f
           echo "Total files: $(find all-results/ -type f | wc -l)"
 
-      - name: Transform Results to JSON
+      - name: Record pipeline end time
         if: always()
-        run: node .github/scripts/transform-results.js
+        run: echo "PIPELINE_COMPLETED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_ENV
+
+      - name: Transform and Merge Results
+        if: always()
+        run: node .github/scripts/merge-payloads.js
         env:
           RESULTS_PATH: all-results/
           PAYLOAD_OUTPUT_PATH: test-results-payload.json
@@ -199,6 +237,8 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
+          PIPELINE_STARTED_AT: ${{ env.PIPELINE_STARTED_AT }}
+          PIPELINE_COMPLETED_AT: ${{ env.PIPELINE_COMPLETED_AT }}
 
       - name: Upload Payload as Artifact
         if: always()

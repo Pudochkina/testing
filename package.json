@@ -1,9 +1,16 @@
 {
   "name": "testing",
   "version": "1.0.0",
-  "description": "",
+  "description": "Playwright E2E tests for DemoQA Book Store with flaky simulator",
   "main": "index.js",
-  "scripts": {},
+  "scripts": {
+    "test": "npx playwright test",
+    "test:smoke": "npx playwright test --grep @smoke",
+    "test:functional": "npx playwright test --grep @functional",
+    "test:flaky": "cross-env ENABLE_FLAKY=true FLAKY_MIN=5 FLAKY_MAX=15 npx playwright test",
+    "test:ui": "npx playwright test --ui",
+    "report": "npx playwright show-report"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Pudochkina/testing.git"
@@ -18,6 +25,7 @@
   "homepage": "https://github.com/Pudochkina/testing#readme",
   "devDependencies": {
     "@playwright/test": "^1.60.0",
-    "@types/node": "^25.9.2"
+    "@types/node": "^25.9.2",
+    "cross-env": "^7.0.3"
   }
 }

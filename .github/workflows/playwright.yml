@@ -1,27 +1,160 @@
 name: Playwright Tests
+
 on:
   push:
-    branches: [ main, master ]
+    branches: [main, master]
   pull_request:
-    branches: [ main, master ]
+    branches: [main, master]
+  workflow_dispatch:
+
 jobs:
-  test:
+  smoke-tests:
+    name: Smoke Tests
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Smoke Tests
+        run: npm run test:smoke
+        env:
+          ENABLE_FLAKY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          FLAKY_MIN: 2
+          FLAKY_MAX: 5
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 30
+
+  functional-tests:
+    name: Functional Tests
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: lts/*
-    - name: Install dependencies
-      run: npm ci
-    - name: Install Playwright Browsers
-      run: npx playwright install --with-deps
-    - name: Run Playwright tests
-      run: npx playwright test
-    - uses: actions/upload-artifact@v4
-      if: ${{ !cancelled() }}
-      with:
-        name: playwright-report
-        path: playwright-report/
-        retention-days: 30
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Functional Tests
+        run: npx playwright test --grep "@functional"
+        env:
+          ENABLE_FLAKY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          FLAKY_MIN: 5
+          FLAKY_MAX: 10
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: functional-test-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 30
+
+  ui-ux-tests:
+    name: UI/UX Tests
+    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run UI/UX Tests
+        run: npx playwright test --grep "@ui-ux"
+        env:
+          ENABLE_FLAKY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+          FLAKY_MIN: 1
+          FLAKY_MAX: 3
+
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-ux-test-results
+          path: |
+            test-results/
+            playwright-report/
+          retention-days: 30
+
+  send-results:
+    name: Send Results to Monitoring
+    needs: [smoke-tests, functional-tests, ui-ux-tests]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: all-results/
+
+      - name: List downloaded artifacts
+        run: |
+          find all-results/ -type f
+          echo "Total files: $(find all-results/ -type f | wc -l)"
+
+      - name: Transform Results to JSON
+        run: node .github/scripts/transform-results.js
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          RESULTS_PATH: all-results/
+
+      - name: Send to Monitoring Server
+        if: env.MONITORING_WEBHOOK_URL != ''
+        run: |
+          curl -X POST "${{ secrets.MONITORING_WEBHOOK_URL }}" \
+            -H "Content-Type: application/json" \
+            -H "X-Webhook-Secret: ${{ secrets.WEBHOOK_SECRET }}" \
+            -d @test-results-payload.json
+        env:
+          MONITORING_WEBHOOK_URL: ${{ secrets.MONITORING_WEBHOOK_URL }}
+
+      - name: Upload monitoring payload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-payload
+          path: test-results-payload.json
+          retention-days: 30

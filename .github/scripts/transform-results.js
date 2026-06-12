@@ -91,7 +91,11 @@ function extractErrorLog(result) {
   return raw ? stripAnsiCodes(raw) : null;
 }
 
-function collectAttemptErrors(results) {
+function aggregateErrorLogs(results) {
+  if (!results || results.length === 0) {
+    return null;
+  }
+
   const allErrors = [];
 
   results.forEach((result, index) => {
@@ -101,7 +105,10 @@ function collectAttemptErrors(results) {
     }
 
     if (results.length > 1) {
-      allErrors.push(`Attempt ${index + 1}:\n${cleanedError}`);
+      const attemptStatus = result.status || 'unknown';
+      allErrors.push(
+        `=== Attempt ${index + 1} of ${results.length} (${attemptStatus}) ===\n${cleanedError}`,
+      );
     } else {
       allErrors.push(cleanedError);
     }
@@ -110,8 +117,26 @@ function collectAttemptErrors(results) {
   return allErrors.length > 0 ? allErrors.join('\n\n---\n\n') : null;
 }
 
-function determineTestStatus(results) {
+function determineTestStatus(results, testOutcome) {
+  if (!results || results.length === 0) {
+    if (testOutcome === 'flaky') {
+      return 'flaky';
+    }
+    if (testOutcome === 'unexpected') {
+      return 'failed';
+    }
+    if (testOutcome === 'expected') {
+      return 'passed';
+    }
+    return 'skipped';
+  }
+
   const statuses = results.map((result) => mapStatus(result.status));
+
+  // Playwright outcome is authoritative when it marks a test as flaky.
+  if (testOutcome === 'flaky') {
+    return 'flaky';
+  }
 
   // Rule 1: If the test ever passed, classify as passed or flaky.
   const passedIndex = statuses.indexOf('passed');
@@ -123,7 +148,7 @@ function determineTestStatus(results) {
   }
 
   // Rule 2: Never passed, but at least one failure → failed.
-  if (statuses.includes('failed')) {
+  if (testOutcome === 'unexpected' || statuses.includes('failed')) {
     return 'failed';
   }
 
@@ -135,21 +160,38 @@ function getAttemptStatuses(results) {
   return results.map((result) => mapStatus(result.status));
 }
 
-function resolveFinalTestResult(results) {
+function resolveFinalTestResult(results, testOutcome) {
   if (!results || results.length === 0) {
-    return null;
+    if (!testOutcome) {
+      return null;
+    }
+
+    const finalStatus = determineTestStatus(results, testOutcome);
+    return {
+      status: finalStatus,
+      duration_ms: 0,
+      started_at: new Date().toISOString(),
+      error_log: null,
+      is_flaky: finalStatus === 'flaky',
+      retry_count: 0,
+      total_attempts: 0,
+      attempt_statuses: [],
+    };
   }
 
-  const finalStatus = determineTestStatus(results);
+  const finalStatus = determineTestStatus(results, testOutcome);
   const lastResult = results[results.length - 1];
+  const attemptStatuses = getAttemptStatuses(results);
 
   return {
     status: finalStatus,
     duration_ms: Math.round(lastResult.duration || 0),
     started_at: new Date(lastResult.startTime || Date.now()).toISOString(),
-    error_log: collectAttemptErrors(results),
+    error_log: aggregateErrorLogs(results),
     is_flaky: finalStatus === 'flaky',
     retry_count: Math.max(0, results.length - 1),
+    total_attempts: results.length,
+    attempt_statuses: attemptStatuses,
   };
 }
 
@@ -179,8 +221,15 @@ function processReport(report, jobName, jobTiming = {}) {
 
         spec.tests.forEach((test) => {
           const results = test.results || [];
-          const resolved = resolveFinalTestResult(results);
+          const testOutcome = test.status;
+
+          if (results.length === 0) {
+            console.warn(`Test "${spec.title}" has no results; using Playwright outcome "${testOutcome || 'unknown'}"`);
+          }
+
+          const resolved = resolveFinalTestResult(results, testOutcome);
           if (!resolved) {
+            console.warn(`Skipping test "${spec.title}" — no results and no Playwright outcome`);
             return;
           }
 
@@ -190,7 +239,13 @@ function processReport(report, jobName, jobTiming = {}) {
             flaky += 1;
             flakyDetails.push({
               test_name: spec.title,
-              attempts: getAttemptStatuses(results),
+              suite_name: suiteName,
+              attempts: results.map((result) => ({
+                status: result.status || 'unknown',
+                duration: result.duration || 0,
+                hasError: Boolean(extractErrorLog(result)),
+              })),
+              attempt_statuses: resolved.attempt_statuses,
             });
           } else skipped += 1;
 
@@ -225,11 +280,18 @@ function processReport(report, jobName, jobTiming = {}) {
   const calculatedTotal = passed + failed + skipped + flaky;
 
   if (calculatedTotal !== actualTotal) {
-    console.warn(`COUNTING INVARIANT VIOLATED for job "${jobName}"!`);
-    console.warn(
+    console.error(`COUNTING INVARIANT VIOLATED for job "${jobName}"!`);
+    console.error(
       `   passed(${passed}) + failed(${failed}) + flaky(${flaky}) + skipped(${skipped}) = ${calculatedTotal}`,
     );
-    console.warn(`   Actual test cases count = ${actualTotal}`);
+    console.error(`   Actual test cases count = ${actualTotal}`);
+  }
+
+  const reportFlakyCount = report.stats?.flaky || 0;
+  if (reportFlakyCount > 0 && flaky !== reportFlakyCount) {
+    console.warn(
+      `Playwright report stats.flaky=${reportFlakyCount} but transform detected flaky=${flaky} for job "${jobName}"`,
+    );
   }
 
   const durationMs =
@@ -377,11 +439,18 @@ function logJobStatusBreakdown(jobName, stats) {
   );
 
   if (stats.flakyDetails.length > 0) {
-    console.log('   Flaky tests:');
-    stats.flakyDetails.forEach(({ test_name, attempts }) => {
-      console.log(`     - ${test_name}`);
-      console.log(`       Attempts: ${attempts.join(' -> ')}`);
+    console.log(`   Flaky tests (${stats.flakyDetails.length}):`);
+    stats.flakyDetails.forEach(({ test_name, suite_name, attempts, attempt_statuses }, index) => {
+      console.log(`     ${index + 1}. ${test_name}`);
+      console.log(`        Suite: ${suite_name}`);
+      console.log(`        Mapped statuses: ${attempt_statuses.join(' -> ')}`);
+      attempts.forEach((attempt, attemptIndex) => {
+        console.log(
+          `        Attempt ${attemptIndex + 1}: ${attempt.status} (${attempt.duration}ms, error: ${attempt.hasError ? 'yes' : 'no'})`,
+        );
+      });
     });
+    console.log('   Tip: check error_log in the payload for all failure reasons from every attempt.');
   }
 }
 

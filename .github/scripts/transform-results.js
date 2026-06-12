@@ -17,10 +17,6 @@ function mapStatus(playwrightStatus) {
   return mapping[playwrightStatus] || 'skipped';
 }
 
-function isFailureStatus(playwrightStatus) {
-  return playwrightStatus === 'failed' || playwrightStatus === 'timedOut';
-}
-
 function stripAnsiCodes(value) {
   if (!value) {
     return value;
@@ -114,29 +110,45 @@ function collectAttemptErrors(results) {
   return allErrors.length > 0 ? allErrors.join('\n\n---\n\n') : null;
 }
 
+function determineTestStatus(results) {
+  const statuses = results.map((result) => mapStatus(result.status));
+
+  // Rule 1: If the test ever passed, classify as passed or flaky.
+  const passedIndex = statuses.indexOf('passed');
+  if (passedIndex !== -1) {
+    const hadFailuresBeforePass = statuses
+      .slice(0, passedIndex)
+      .some((status) => status === 'failed');
+    return hadFailuresBeforePass ? 'flaky' : 'passed';
+  }
+
+  // Rule 2: Never passed, but at least one failure → failed.
+  if (statuses.includes('failed')) {
+    return 'failed';
+  }
+
+  // Rule 3: All attempts were skipped → skipped.
+  return 'skipped';
+}
+
+function getAttemptStatuses(results) {
+  return results.map((result) => mapStatus(result.status));
+}
+
 function resolveFinalTestResult(results) {
   if (!results || results.length === 0) {
     return null;
   }
 
+  const finalStatus = determineTestStatus(results);
   const lastResult = results[results.length - 1];
-  const previousResults = results.slice(0, -1);
-  let finalStatus = mapStatus(lastResult.status);
-  let isFlaky = false;
-
-  const hadFailures = previousResults.some((result) => isFailureStatus(result.status));
-
-  if (finalStatus === 'passed' && hadFailures) {
-    finalStatus = 'flaky';
-    isFlaky = true;
-  }
 
   return {
     status: finalStatus,
     duration_ms: Math.round(lastResult.duration || 0),
     started_at: new Date(lastResult.startTime || Date.now()).toISOString(),
     error_log: collectAttemptErrors(results),
-    is_flaky: isFlaky,
+    is_flaky: finalStatus === 'flaky',
     retry_count: Math.max(0, results.length - 1),
   };
 }
@@ -154,6 +166,7 @@ function processReport(report, jobName, jobTiming = {}) {
   let failed = 0;
   let skipped = 0;
   let flaky = 0;
+  const flakyDetails = [];
 
   function walkSuite(suite) {
     if (suite.specs) {
@@ -165,15 +178,21 @@ function processReport(report, jobName, jobTiming = {}) {
         const filePath = normalizeFilePath(spec.file);
 
         spec.tests.forEach((test) => {
-          const resolved = resolveFinalTestResult(test.results || []);
+          const results = test.results || [];
+          const resolved = resolveFinalTestResult(results);
           if (!resolved) {
             return;
           }
 
           if (resolved.status === 'passed') passed += 1;
           else if (resolved.status === 'failed') failed += 1;
-          else if (resolved.status === 'flaky') flaky += 1;
-          else skipped += 1;
+          else if (resolved.status === 'flaky') {
+            flaky += 1;
+            flakyDetails.push({
+              test_name: spec.title,
+              attempts: getAttemptStatuses(results),
+            });
+          } else skipped += 1;
 
           if (!testCaseMap.has(testKey)) {
             testCaseMap.set(testKey, {
@@ -202,14 +221,25 @@ function processReport(report, jobName, jobTiming = {}) {
     return null;
   }
 
+  const actualTotal = testCases.length;
+  const calculatedTotal = passed + failed + skipped + flaky;
+
+  if (calculatedTotal !== actualTotal) {
+    console.warn(`COUNTING INVARIANT VIOLATED for job "${jobName}"!`);
+    console.warn(
+      `   passed(${passed}) + failed(${failed}) + flaky(${flaky}) + skipped(${skipped}) = ${calculatedTotal}`,
+    );
+    console.warn(`   Actual test cases count = ${actualTotal}`);
+  }
+
   const durationMs =
     getJobDurationMs(jobTiming.startedAt, jobTiming.completedAt) ??
     Math.round(report.stats?.duration || 0);
 
-  return {
+  const job = {
     job_name: jobName,
     status: failed > 0 ? 'failure' : 'success',
-    total_tests: passed + failed + skipped + flaky,
+    total_tests: actualTotal,
     passed_tests: passed,
     failed_tests: failed,
     skipped_tests: skipped,
@@ -219,6 +249,18 @@ function processReport(report, jobName, jobTiming = {}) {
     completed_at: jobTiming.completedAt || null,
     test_cases: testCases,
   };
+
+  logJobStatusBreakdown(jobName, {
+    passed,
+    failed,
+    skipped,
+    flaky,
+    actualTotal,
+    calculatedTotal,
+    flakyDetails,
+  });
+
+  return job;
 }
 
 function findJsonFiles(dir, files = []) {
@@ -323,13 +365,33 @@ function toMs(value) {
   return Number.isNaN(ms) ? null : ms;
 }
 
+function logJobStatusBreakdown(jobName, stats) {
+  console.log(`\nTest status breakdown for "${jobName}":`);
+  console.log(`   Passed:  ${stats.passed}`);
+  console.log(`   Failed:  ${stats.failed}`);
+  console.log(`   Flaky:   ${stats.flaky}`);
+  console.log(`   Skipped: ${stats.skipped}`);
+  console.log(`   Total:   ${stats.actualTotal}`);
+  console.log(
+    `   Invariant: ${stats.calculatedTotal === stats.actualTotal ? 'PASSED' : 'FAILED'} (${stats.calculatedTotal} === ${stats.actualTotal})`,
+  );
+
+  if (stats.flakyDetails.length > 0) {
+    console.log('   Flaky tests:');
+    stats.flakyDetails.forEach(({ test_name, attempts }) => {
+      console.log(`     - ${test_name}`);
+      console.log(`       Attempts: ${attempts.join(' -> ')}`);
+    });
+  }
+}
+
 function logDurationAnalysis(timing, jobs) {
   console.log('\nDuration analysis:');
   console.log(`   Pipeline duration (GitHub wall-clock): ${timing.duration_ms}ms`);
   jobs.forEach((job) => {
     console.log(`   Job "${job.job_name}": ${job.duration_ms}ms`);
   });
-  console.log('   Test durations use the last attempt only; retries are not counted as separate tests.');
+  console.log('   Final status uses best-result logic across all attempts; duration uses the last attempt.');
 }
 
 function main() {
@@ -396,6 +458,12 @@ function main() {
   console.log(`   Failed: ${totals.failed}`);
   console.log(`   Flaky: ${totals.flaky}`);
   console.log(`   Skipped: ${totals.skipped}`);
+  console.log(
+    `   Sum check: ${totals.passed} + ${totals.failed} + ${totals.flaky} + ${totals.skipped} = ${totals.passed + totals.failed + totals.flaky + totals.skipped}`,
+  );
+  console.log(
+    `   Invariant: ${totals.passed + totals.failed + totals.flaky + totals.skipped === totals.total ? 'PASSED' : 'FAILED'}`,
+  );
   console.log(`   Payload saved to: ${outputPath}`);
 }
 

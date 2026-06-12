@@ -33,6 +33,26 @@ jobs:
           FLAKY_MIN: 2
           FLAKY_MAX: 5
 
+      - name: Transform Results to JSON
+        if: always()
+        run: node .github/scripts/transform-results.js
+        env:
+          PLAYWRIGHT_REPORT_PATH: test-results/results.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload-smoke.json
+          JOB_NAME: smoke-tests
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload Payload as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhook-payload-smoke
+          path: test-results-payload-smoke.json
+          retention-days: 30
+
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
@@ -67,6 +87,26 @@ jobs:
           ENABLE_FLAKY: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
           FLAKY_MIN: 5
           FLAKY_MAX: 10
+
+      - name: Transform Results to JSON
+        if: always()
+        run: node .github/scripts/transform-results.js
+        env:
+          PLAYWRIGHT_REPORT_PATH: test-results/results.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload-functional.json
+          JOB_NAME: functional-tests
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload Payload as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhook-payload-functional
+          path: test-results-payload-functional.json
+          retention-days: 30
 
       - name: Upload Test Results
         if: always()
@@ -103,6 +143,26 @@ jobs:
           FLAKY_MIN: 1
           FLAKY_MAX: 3
 
+      - name: Transform Results to JSON
+        if: always()
+        run: node .github/scripts/transform-results.js
+        env:
+          PLAYWRIGHT_REPORT_PATH: test-results/results.json
+          PAYLOAD_OUTPUT_PATH: test-results-payload-ui-ux.json
+          JOB_NAME: ui-ux-tests
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_WORKFLOW: ${{ github.workflow }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+
+      - name: Upload Payload as Artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webhook-payload-ui-ux
+          path: test-results-payload-ui-ux.json
+          retention-days: 30
+
       - name: Upload Test Results
         if: always()
         uses: actions/upload-artifact@v4
@@ -131,30 +191,28 @@ jobs:
           echo "Total files: $(find all-results/ -type f | wc -l)"
 
       - name: Transform Results to JSON
+        if: always()
         run: node .github/scripts/transform-results.js
         env:
+          RESULTS_PATH: all-results/
+          PAYLOAD_OUTPUT_PATH: test-results-payload.json
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_WORKFLOW: ${{ github.workflow }}
           GITHUB_REF_NAME: ${{ github.ref_name }}
-          GITHUB_SHA: ${{ github.sha }}
-          GITHUB_EVENT_NAME: ${{ github.event_name }}
-          RESULTS_PATH: all-results/
 
-      - name: Send to Monitoring Server
-        if: env.MONITORING_WEBHOOK_URL != ''
-        run: |
-          curl -X POST "${{ secrets.MONITORING_WEBHOOK_URL }}" \
-            -H "Content-Type: application/json" \
-            -H "X-Webhook-Secret: ${{ secrets.WEBHOOK_SECRET }}" \
-            -d @test-results-payload.json
-        env:
-          MONITORING_WEBHOOK_URL: ${{ secrets.MONITORING_WEBHOOK_URL }}
-
-      - name: Upload monitoring payload
+      - name: Upload Payload as Artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: monitoring-payload
+          name: webhook-payload
           path: test-results-payload.json
           retention-days: 30
+
+      - name: Send to Monitoring Server
+        if: always() && env.WEBHOOK_URL != ''
+        run: node .github/scripts/send-webhook.js
+        env:
+          WEBHOOK_URL: ${{ secrets.WEBHOOK_URL }}
+          WEBHOOK_SECRET: ${{ secrets.WEBHOOK_SECRET }}
+          PAYLOAD_PATH: test-results-payload.json

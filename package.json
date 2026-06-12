@@ -9,7 +9,10 @@
     "test:functional": "npx playwright test --grep @functional",
     "test:flaky": "cross-env ENABLE_FLAKY=true FLAKY_MIN=5 FLAKY_MAX=15 npx playwright test",
     "test:ui": "npx playwright test --ui",
-    "report": "npx playwright show-report"
+    "report": "npx playwright show-report",
+    "transform": "node .github/scripts/transform-results.js",
+    "webhook": "node .github/scripts/send-webhook.js",
+    "test:and:send": "npm test && npm run transform && npm run webhook"
   },
   "repository": {
     "type": "git",

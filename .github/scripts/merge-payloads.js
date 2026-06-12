@@ -29,12 +29,53 @@ function findPayloadFiles(dir, files = []) {
   return files;
 }
 
-function durationFromTimestamps(startedAt, completedAt) {
-  if (!startedAt || !completedAt) {
-    return 0;
+function toMs(value) {
+  if (!value) {
+    return null;
+  }
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
+}
+
+function resolvePipelineTiming(mergedJobs, referencePipeline) {
+  const envStartedMs = toMs(process.env.PIPELINE_STARTED_AT);
+  const envCompletedMs = toMs(process.env.PIPELINE_COMPLETED_AT);
+
+  const jobStartMs = mergedJobs
+    .map((job) => toMs(job.started_at))
+    .filter((value) => value != null);
+  const jobEndMs = mergedJobs
+    .map((job) => toMs(job.completed_at))
+    .filter((value) => value != null);
+
+  const referenceStartedMs = toMs(referencePipeline?.started_at);
+
+  let startedMs =
+    envStartedMs ??
+    (jobStartMs.length > 0 ? Math.min(...jobStartMs) : null) ??
+    referenceStartedMs ??
+    Date.now();
+
+  let completedMs = envCompletedMs ?? 0;
+  if (jobEndMs.length > 0) {
+    completedMs = Math.max(completedMs, ...jobEndMs);
   }
 
-  return Math.max(0, new Date(completedAt).getTime() - new Date(startedAt).getTime());
+  if (!completedMs) {
+    completedMs = startedMs;
+  }
+
+  if (completedMs < startedMs) {
+    completedMs = startedMs;
+  }
+
+  const durationMs = completedMs - startedMs;
+
+  return {
+    started_at: new Date(startedMs).toISOString(),
+    finished_at: new Date(completedMs).toISOString(),
+    duration_ms: durationMs,
+  };
 }
 
 function readPayload(filePath) {
@@ -69,11 +110,7 @@ function main() {
     console.log(`Merged ${path.relative(RESULTS_PATH, filePath)} (${payload.jobs.length} job(s))`);
   });
 
-  const pipelineStartedAt =
-    process.env.PIPELINE_STARTED_AT || referencePipeline?.started_at || new Date().toISOString();
-  const pipelineCompletedAt =
-    process.env.PIPELINE_COMPLETED_AT || referencePipeline?.finished_at || new Date().toISOString();
-  const pipelineDurationMs = durationFromTimestamps(pipelineStartedAt, pipelineCompletedAt);
+  const timing = resolvePipelineTiming(mergedJobs, referencePipeline);
 
   const mergedPayload = {
     pipeline: {
@@ -82,14 +119,26 @@ function main() {
       repository: process.env.GITHUB_REPOSITORY || referencePipeline?.repository || 'unknown/repo',
       branch: process.env.GITHUB_REF_NAME || referencePipeline?.branch || 'main',
       status: pipelineStatus,
-      started_at: pipelineStartedAt,
-      finished_at: pipelineCompletedAt,
-      duration_ms: pipelineDurationMs,
+      started_at: timing.started_at,
+      finished_at: timing.finished_at,
+      duration_ms: timing.duration_ms,
     },
     jobs: mergedJobs,
   };
 
   fs.writeFileSync(OUTPUT_PATH, JSON.stringify(mergedPayload, null, 2));
+
+  require('child_process').execFileSync(
+    process.execPath,
+    [path.join(__dirname, 'fix-pipeline-timing.js'), OUTPUT_PATH],
+    {
+      env: { ...process.env, USE_PIPELINE_ENV: 'true' },
+      stdio: 'inherit',
+    },
+  );
+
+  const finalizedPayload = readPayload(OUTPUT_PATH);
+  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(finalizedPayload, null, 2));
 
   const totals = mergedJobs.reduce(
     (acc, job) => ({
@@ -103,7 +152,12 @@ function main() {
   );
 
   console.log(`\nMerged payload saved to ${OUTPUT_PATH}`);
-  console.log(`   Pipeline duration: ${pipelineDurationMs}ms (${(pipelineDurationMs / 1000 / 60).toFixed(2)} min)`);
+  console.log(`   Pipeline started: ${finalizedPayload.pipeline.started_at}`);
+  console.log(`   Pipeline finished: ${finalizedPayload.pipeline.finished_at}`);
+  console.log(`   Pipeline duration: ${finalizedPayload.pipeline.duration_ms}ms (${(finalizedPayload.pipeline.duration_ms / 1000 / 60).toFixed(2)} min)`);
+  mergedJobs.forEach((job) => {
+    console.log(`   Job "${job.job_name}": ${job.duration_ms}ms`);
+  });
   console.log(`   Total jobs: ${mergedJobs.length}`);
   console.log(`   Total tests: ${totals.total}`);
   console.log(`   Passed: ${totals.passed}, Failed: ${totals.failed}, Flaky: ${totals.flaky}, Skipped: ${totals.skipped}`);

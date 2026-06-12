@@ -286,21 +286,41 @@ function buildPipelineTiming(jobs) {
     };
   }
 
-  if (pipelineStartedAt && jobs.length === 1 && jobs[0].completed_at) {
-    const durationMs = getJobDurationMs(pipelineStartedAt, jobs[0].completed_at) || jobs[0].duration_ms;
+  // Multi-job local merge via RESULTS_PATH
+  if (process.env.RESULTS_PATH) {
+    const jobEndMs = jobs
+      .map((job) => toMs(job.completed_at))
+      .filter((value) => value != null);
+    const jobStartMs = jobs
+      .map((job) => toMs(job.started_at))
+      .filter((value) => value != null);
+
+    const startedMs =
+      toMs(pipelineStartedAt) ??
+      (jobStartMs.length > 0 ? Math.min(...jobStartMs) : Date.now());
+    const completedMs = jobEndMs.length > 0 ? Math.max(...jobEndMs) : startedMs;
+
     return {
-      started_at: pipelineStartedAt,
-      finished_at: jobs[0].completed_at,
-      duration_ms: durationMs,
+      started_at: new Date(startedMs).toISOString(),
+      finished_at: new Date(completedMs).toISOString(),
+      duration_ms: Math.max(0, completedMs - startedMs),
     };
   }
 
-  const now = new Date().toISOString();
+  // Per-job CI artifact: merge-payloads.js sets final pipeline timing
   return {
-    started_at: pipelineStartedAt || now,
+    started_at: pipelineStartedAt || new Date().toISOString(),
     finished_at: null,
     duration_ms: 0,
   };
+}
+
+function toMs(value) {
+  if (!value) {
+    return null;
+  }
+  const ms = new Date(value).getTime();
+  return Number.isNaN(ms) ? null : ms;
 }
 
 function logDurationAnalysis(timing, jobs) {

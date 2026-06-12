@@ -1,8 +1,10 @@
 const fs = require('fs');
 const path = require('path');
 
-const DURATION_TOLERANCE_MS = 1000;
 const SPEC_PREFIX = 'tests/specs/';
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+const BRACKET_ANSI_PATTERN = /\[[0-9;]*m/g;
+const SUITE_TAG_PATTERN = /@[\w-]+/g;
 
 function mapStatus(playwrightStatus) {
   const mapping = {
@@ -15,6 +17,20 @@ function mapStatus(playwrightStatus) {
   return mapping[playwrightStatus] || 'skipped';
 }
 
+function stripAnsiCodes(value) {
+  if (!value) {
+    return value;
+  }
+  return String(value).replace(ANSI_PATTERN, '').replace(BRACKET_ANSI_PATTERN, '');
+}
+
+function cleanSuiteName(suiteName) {
+  if (!suiteName) {
+    return suiteName;
+  }
+  return suiteName.replace(SUITE_TAG_PATTERN, '').replace(/\s+/g, ' ').trim();
+}
+
 function formatLabels(tags = [], suiteTitle = '') {
   const labels = new Set();
 
@@ -22,7 +38,7 @@ function formatLabels(tags = [], suiteTitle = '') {
     labels.add(tag.startsWith('@') ? tag : `@${tag}`);
   });
 
-  const titleTags = suiteTitle.match(/@[\w-]+/g) || [];
+  const titleTags = suiteTitle.match(SUITE_TAG_PATTERN) || [];
   titleTags.forEach((tag) => labels.add(tag));
 
   return [...labels];
@@ -56,18 +72,19 @@ function normalizeJobName(rawName) {
 }
 
 function extractErrorLog(result) {
+  let raw = null;
+
   if (result.error?.stack) {
-    return result.error.stack;
-  }
-  if (result.error?.message) {
-    return result.error.message;
-  }
-  if (Array.isArray(result.errors) && result.errors.length > 0) {
-    return result.errors
+    raw = result.error.stack;
+  } else if (result.error?.message) {
+    raw = result.error.message;
+  } else if (Array.isArray(result.errors) && result.errors.length > 0) {
+    raw = result.errors
       .map((entry) => entry.stack || entry.message || String(entry))
       .join('\n');
   }
-  return null;
+
+  return raw ? stripAnsiCodes(raw) : null;
 }
 
 function processReport(report, jobName) {
@@ -80,9 +97,10 @@ function processReport(report, jobName) {
   function walkSuite(suite) {
     if (suite.specs) {
       suite.specs.forEach((spec) => {
-        const suiteName = suite.title || 'default-suite';
+        const rawSuiteTitle = suite.title || 'default-suite';
+        const suiteName = cleanSuiteName(rawSuiteTitle) || 'default-suite';
         const testKey = `${spec.title}::${suiteName}`;
-        const labels = formatLabels(spec.tags, suiteName);
+        const labels = formatLabels(spec.tags, rawSuiteTitle);
         const filePath = normalizeFilePath(spec.file);
 
         if (!testCaseMap.has(testKey)) {
@@ -187,7 +205,42 @@ function readReports() {
   return [{ report, jobName, source: singleReportPath }];
 }
 
-function buildPipelineTimestamps(jobs) {
+function buildPipelineTiming(reportEntries, jobs) {
+  const statsList = reportEntries
+    .map(({ report }) => report.stats)
+    .filter((stats) => stats && stats.startTime);
+
+  if (statsList.length === 1) {
+    const stats = statsList[0];
+    const startMs = new Date(stats.startTime).getTime();
+    const durationMs = Math.round(stats.duration || 0);
+
+    return {
+      started_at: new Date(startMs).toISOString(),
+      finished_at: new Date(startMs + durationMs).toISOString(),
+      duration_ms: durationMs,
+    };
+  }
+
+  if (statsList.length > 1) {
+    let earliestStart = Infinity;
+    let latestEnd = 0;
+
+    statsList.forEach((stats) => {
+      const startMs = new Date(stats.startTime).getTime();
+      const endMs = startMs + Math.round(stats.duration || 0);
+      earliestStart = Math.min(earliestStart, startMs);
+      latestEnd = Math.max(latestEnd, endMs);
+    });
+
+    const durationMs = latestEnd - earliestStart;
+    return {
+      started_at: new Date(earliestStart).toISOString(),
+      finished_at: new Date(latestEnd).toISOString(),
+      duration_ms: durationMs,
+    };
+  }
+
   let earliestStart = Infinity;
   let latestEnd = 0;
 
@@ -218,28 +271,13 @@ function buildPipelineTimestamps(jobs) {
   };
 }
 
-function validateDurations(pipelineDurationMs, jobs) {
+function logDurationAnalysis(pipelineDurationMs, jobs) {
   const totalJobDuration = jobs.reduce((sum, job) => sum + job.duration_ms, 0);
-  const pipelineDiff = Math.abs(pipelineDurationMs - totalJobDuration);
 
-  if (pipelineDiff > DURATION_TOLERANCE_MS) {
-    console.warn(
-      `Duration mismatch: pipeline=${pipelineDurationMs}ms, sum(jobs)=${totalJobDuration}ms`,
-    );
-  }
-
-  jobs.forEach((job) => {
-    const testDuration = job.test_cases.reduce(
-      (sum, testCase) => sum + testCase.results.reduce((inner, result) => inner + result.duration_ms, 0),
-      0,
-    );
-    const jobDiff = Math.abs(job.duration_ms - testDuration);
-    if (jobDiff > DURATION_TOLERANCE_MS) {
-      console.warn(
-        `Duration mismatch in job "${job.job_name}": job=${job.duration_ms}ms, sum(tests)=${testDuration}ms`,
-      );
-    }
-  });
+  console.log('\nDuration analysis:');
+  console.log(`   Pipeline duration (from Playwright stats): ${pipelineDurationMs}ms`);
+  console.log(`   Sum of job durations (actual test durations): ${totalJobDuration}ms`);
+  console.log('   Note: These may differ due to parallel execution, setup/teardown, or retries.');
 }
 
 function main() {
@@ -263,7 +301,7 @@ function main() {
     process.exit(1);
   }
 
-  const timestamps = buildPipelineTimestamps(jobs);
+  const timing = buildPipelineTiming(reportEntries, jobs);
   const hasFailures = jobs.some((job) => job.status === 'failure');
 
   const payload = {
@@ -273,13 +311,14 @@ function main() {
       repository: process.env.GITHUB_REPOSITORY || 'local/testing',
       branch: process.env.GITHUB_REF_NAME || 'main',
       status: hasFailures ? 'failure' : 'success',
-      started_at: timestamps.started_at,
-      finished_at: timestamps.finished_at,
+      started_at: timing.started_at,
+      finished_at: timing.finished_at,
+      duration_ms: timing.duration_ms,
     },
     jobs,
   };
 
-  validateDurations(timestamps.duration_ms, jobs);
+  logDurationAnalysis(timing.duration_ms, jobs);
 
   const outputPath = process.env.PAYLOAD_OUTPUT_PATH || 'test-results-payload.json';
   fs.writeFileSync(outputPath, JSON.stringify(payload, null, 2));
@@ -297,13 +336,12 @@ function main() {
   console.log('\nPayload generated successfully');
   console.log(`   Pipeline: ${payload.pipeline.pipeline_name}`);
   console.log(`   Status: ${payload.pipeline.status}`);
+  console.log(`   Duration: ${timing.duration_ms}ms (${(timing.duration_ms / 1000).toFixed(2)}s)`);
   console.log(`   Jobs: ${jobs.length}`);
   console.log(`   Total tests: ${totals.total}`);
   console.log(`   Passed: ${totals.passed}`);
   console.log(`   Failed: ${totals.failed}`);
   console.log(`   Skipped: ${totals.skipped}`);
-  console.log(`   Pipeline duration: ${timestamps.duration_ms}ms`);
-  console.log(`   Sum of job durations: ${jobs.reduce((sum, job) => sum + job.duration_ms, 0)}ms`);
   console.log(`   Payload saved to: ${outputPath}`);
 }
 

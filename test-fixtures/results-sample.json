@@ -1,0 +1,52 @@
+{
+  "stats": {
+    "startTime": "2026-06-10T10:00:00.000Z",
+    "duration": 930000,
+    "expected": 2,
+    "unexpected": 1,
+    "skipped": 0
+  },
+  "suites": [
+    {
+      "title": "Book List @smoke @book-list",
+      "specs": [
+        {
+          "title": "TC-BS-001: Verify book list loads successfully",
+          "file": "tests/specs/book-list.spec.ts",
+          "tags": ["@smoke", "@book-list"],
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "passed",
+                  "duration": 2500,
+                  "startTime": "2026-06-10T10:00:10.000Z"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "title": "TC-BS-003: Verify ISBN format is correct",
+          "file": "tests/specs/book-list.spec.ts",
+          "tags": ["@smoke", "@book-list"],
+          "tests": [
+            {
+              "results": [
+                {
+                  "status": "failed",
+                  "duration": 5200,
+                  "startTime": "2026-06-10T10:00:15.000Z",
+                  "error": {
+                    "message": "expect(received).toContain(expected)",
+                    "stack": "Error: \u001b[2mexpect(\u001b[22m\u001b[31mreceived\u001b[39m\u001b[2m).toContain(\u001b[22m\u001b[32mexpected\u001b[39m\u001b[2m)\n\nExpected value: \u001b[32m\"Git Pocket Guide\"\u001b[39m\nReceived array: \u001b[31m[]\u001b[39m\n    at tests/specs/book-list.spec.ts:42:20"
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
